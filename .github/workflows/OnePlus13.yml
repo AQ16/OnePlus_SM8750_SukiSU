@@ -1,0 +1,369 @@
+name: ONEPLUS13-SuKiSu-SUSFS
+on:
+  workflow_call:
+
+  workflow_dispatch:
+    inputs:
+      CPU:
+        description: "分支"
+        required: true
+        default: 'sm8750'
+      FEIL:
+        description: "配置文件"
+        required: true
+        default: 'oneplus_13'
+      CPUD:
+        description: "处理器代号"
+        required: true
+        default: 'sun'
+      ANDROID_VERSION:
+        description: "内核安卓版本"
+        required: true
+        default: 'android15'
+      KERNEL_VERSION:
+        description: "内核版本"
+        required: true
+        default: '6.6'
+      KERNEL_NAME:
+        description: "自定义内核后版本名"
+        required: false
+        default: '-android15-8-g013ec21bba94-abogki383916444'
+      KERNEL_TIME:
+       description: "内核构建日期更改"
+       required: true
+       default: '2024-12-17 23:36:49 UTC'
+      SUSFS_CI:
+       type: boolean
+       description: "SUSFS模块下载是否调用CI？"
+       required: true
+       default: true
+      ZRAM:
+        type: boolean
+        description: "是否启用添加更多的ZRAM算法？"
+        required: false
+        default: true
+      enable_feature_x:
+       description: "是否启用KPM"
+       required: false
+       default: false
+       type: boolean
+      
+      
+      
+       
+
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+    steps:
+      - name: Set Timezone to Asia/Shanghai
+        run: |
+          echo "Setting timezone to Asia/Shanghai"
+          sudo timedatectl set-timezone Asia/Shanghai
+          date
+          
+      - name: Generate timestamp
+        id: generate_timestamp
+        run: echo "TIMESTAMP=$(date +%Y%m%d)" >> $GITHUB_ENV
+        
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 16384
+          temp-reserve-mb: 8192
+          swap-size-mb: 8192
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          
+      - name: Configure Git
+        run: |
+         git config --global user.name "QQQiuCi"
+         git config --global user.email "1136673807@qq.com"
+
+      - name: Install dependencies
+        run: |
+         sudo apt update && sudo apt upgrade -y
+         sudo apt install -y python3 git curl
+
+      - name: Install repo tool
+        run: |
+         curl https://storage.googleapis.com/git-repo-downloads/repo > ~/repo
+         chmod a+x ~/repo
+         sudo mv ~/repo /usr/local/bin/repo
+
+      - name: Initialize repo and sync
+        run: |
+         mkdir kernel_workspace && cd kernel_workspace
+         repo init -u https://github.com/JiuGeFaCai/kernel_manifest.git -b refs/heads/oneplus/${{ github.event.inputs.CPU }} -m ${{ github.event.inputs.FEIL }}.xml --depth=1
+         repo --trace sync -c -j$(nproc --all) --no-tags
+         rm kernel_platform/common/android/abi_gki_protected_exports_* || echo "No protected exports!"
+         rm kernel_platform/msm-kernel/android/abi_gki_protected_exports_* || echo "No protected exports!"
+         
+      - name: Set up SukiSU
+        run: |
+         cd kernel_workspace/kernel_platform
+         curl -LSs "https://raw.githubusercontent.com/ShirkNeko/SukiSU-Ultra/main/kernel/setup.sh" | bash -s susfs-dev
+         cd ./KernelSU
+         KSU_VERSION=$(expr $(/usr/bin/git rev-list --count main) "+" 10606)
+         echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+         export KSU_VERSION=$KSU_VERSION
+         sed -i "s/DKSU_VERSION=12800/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
+        
+      - name: Set up susfs
+        run: |
+           cd kernel_workspace
+           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}
+           git clone https://github.com/ShirkNeko/SukiSU_patch.git
+           git clone https://github.com/AQ16/SM8750_patch.git
+           cd kernel_platform        
+           cp ../susfs4ksu/kernel_patches/50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch ./common/
+           cp ../susfs4ksu/kernel_patches/fs/* ./common/fs/
+           cp ../susfs4ksu/kernel_patches/include/linux/* ./common/include/linux/
+           cp ../SM8750_patch/Test/SM8750.patch ./common/
+           if [ "${{ github.event.inputs.ZRAM }}" = "true" ]; then
+           echo "正在打zram补丁"
+           cp -r ../SukiSU_patch/other/zram/lz4k/include/linux/* ./common/include/linux
+           cp -r ../SukiSU_patch/other/zram/lz4k/lib/* ./common/lib
+           cp -r ../SukiSU_patch/other/zram/lz4k/crypto/* ./common/crypto
+           cp -r ../SukiSU_patch/other/zram/lz4k_oplus ./common/lib/
+           echo "zram_patch完成"
+           fi
+           # Apply patches
+           cd ./common
+
+           sed -i 's/-32,12 +32,38/-32,11 +32,37/g' 50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch
+           sed -i '/#include <trace\/hooks\/fs.h>/d' 50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch
+
+           patch -p1 < 50_add_susfs_in_gki-${{ github.event.inputs.ANDROID_VERSION }}-${{ github.event.inputs.KERNEL_VERSION }}.patch || true
+           cp ../../SukiSU_patch/hooks/syscall_hooks.patch ./
+           patch -p1 -F 3 < syscall_hooks.patch
+           patch -p1 -F 3 < SM8750.patch
+           echo "完成"
+
+      - name: Apply LZ4KD
+        run: |
+          cd kernel_workspace/kernel_platform/common
+          if [ "${{ github.event.inputs.ZRAM }}" = "true" ]; then
+            cp ../../SukiSU_patch/other/zram/zram_patch/${{ github.event.inputs.KERNEL_VERSION }}/lz4kd.patch ./
+            echo "正在打lz4kd补丁"
+            patch -p1 -F 3 < lz4kd.patch || true
+            echo 'lz4kd_patch完成'
+            cp ../../SukiSU_patch/other/zram/zram_patch/${{ github.event.inputs.KERNEL_VERSION }}/lz4k_oplus.patch ./
+            echo "正在打lz4k_oplus补丁"
+            patch -p1 -F 3 < lz4k_oplus.patch || true
+            echo 'lz4k_oplus_patch完成'
+          fi
+           
+      - name: Add SUSFS Configuration Settings
+        run: |
+          cd kernel_workspace/kernel_platform
+          echo "CONFIG_KSU=y" >> ./common/arch/arm64/configs/gki_defconfig
+
+          # Add VFS configuration settings
+          echo "CONFIG_KSU_SUSFS_SUS_SU=n" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./common/arch/arm64/configs/gki_defconfig
+          
+          # Add SUSFS configuration settings
+          echo "CONFIG_KSU_SUSFS=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> ./common/arch/arm64/configs/gki_defconfig
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> ./common/arch/arm64/configs/gki_defconfig
+          
+          # LZ4KD配置
+          if [ "${{ github.event.inputs.ZRAM }}" = "true" ]; then
+          CONFIG_FILE=./common/arch/arm64/configs/gki_defconfig
+
+            if [ "${{ github.event.inputs.KERNEL_VERSION }}" = "5.10" ]; then
+              echo "CONFIG_ZSMALLOC=y" >> "$CONFIG_FILE"
+              echo "CONFIG_ZRAM=y" >> "$CONFIG_FILE"
+              echo "CONFIG_MODULE_SIG=n" >> "$CONFIG_FILE"
+              echo "CONFIG_CRYPTO_LZO=y" >> "$CONFIG_FILE"
+              echo "CONFIG_ZRAM_DEF_COMP_LZ4KD=y" >> "$CONFIG_FILE"
+            fi
+
+            if [ "${{ github.event.inputs.KERNEL_VERSION }}" != "6.6" ] && [ "${{ github.event.inputs.KERNEL_VERSION }}" != "5.10" ]; then
+              if grep -q "CONFIG_ZSMALLOC" -- "$CONFIG_FILE"; then
+                sed -i 's/CONFIG_ZSMALLOC=m/CONFIG_ZSMALLOC=y/g' "$CONFIG_FILE"
+              else
+                echo "CONFIG_ZSMALLOC=y" >> "$CONFIG_FILE"
+              fi
+              sed -i 's/CONFIG_ZRAM=m/CONFIG_ZRAM=y/g' "$CONFIG_FILE"
+            fi
+
+            if [ "${{ github.event.inputs.KERNEL_VERSION }}" = "6.6" ]; then
+              echo "CONFIG_ZSMALLOC=y" >> "$CONFIG_FILE"
+              sed -i 's/CONFIG_ZRAM=m/CONFIG_ZRAM=y/g' "$CONFIG_FILE"
+            fi
+
+            if [ "${{ github.event.inputs.ANDROID_VERSION }}" = "android14" ] || [ "${{ github.event.inputs.ANDROID_VERSION }}" = "android15" ]; then
+              if [  -e ./common/modules.bzl ]; then
+                sed -i 's/"drivers\/block\/zram\/zram\.ko",//g; s/"mm\/zsmalloc\.ko",//g' "./common/modules.bzl"
+              fi
+
+              if [  -e ./msm-kernel/modules.bzl ]; then
+                sed -i 's/"drivers\/block\/zram\/zram\.ko",//g; s/"mm\/zsmalloc\.ko",//g' "./msm-kernel/modules.bzl"
+                echo "CONFIG_ZSMALLOC=y" >> "msm-kernel/arch/arm64/configs/${{ github.event.inputs.CPUD }}-GKI.config"
+                echo "CONFIG_ZRAM=y" >> "msm-kernel/arch/arm64/configs/${{ github.event.inputs.CPUD }}-GKI.config"
+              fi
+              
+              echo "CONFIG_MODULE_SIG_FORCE=n" >> "$CONFIG_FILE"
+            elif [ "${{ github.event.inputs.KERNEL_VERSION }}" = "5.10" ] || [ "${{ github.event.inputs.KERNEL_VERSION }}" = "5.15" ]; then
+              rm "common/android/gki_aarch64_modules"
+              touch "common/android/gki_aarch64_modules"
+            fi
+
+            if grep -q "CONFIG_ZSMALLOC=y" "$CONFIG_FILE" && grep -q "CONFIG_ZRAM=y" "$CONFIG_FILE"; then
+              echo "CONFIG_CRYPTO_LZ4HC=y" >> "$CONFIG_FILE"
+              echo "CONFIG_CRYPTO_LZ4K=y" >> "$CONFIG_FILE"
+              echo "CONFIG_CRYPTO_LZ4KD=y" >> "$CONFIG_FILE"
+              echo "CONFIG_CRYPTO_842=y" >> "$CONFIG_FILE"
+              echo "CONFIG_CRYPTO_LZ4K_OPLUS=y" >> "$CONFIG_FILE"
+              echo "CONFIG_ZRAM_WRITEBACK=y" >> "$CONFIG_FILE"
+            fi
+          fi
+
+          
+          #Remove check_defconfig
+          sudo sed -i 's/check_defconfig//' ./common/build.config.gki
+          cd common
+          git add -A && git commit -a -m "BUILD Kernel"
+      
+      - name: Add KPM Configuration Settings
+        if: ${{inputs.enable_feature_x }}
+        run: |
+          cd kernel_workspace/kernel_platform
+          echo "CONFIG_KPM=y" >> ./common/arch/arm64/configs/gki_defconfig
+         
+          #Remove check_defconfig
+          sudo sed -i 's/check_defconfig//' ./common/build.config.gki
+          cd common
+          git add -A && git commit -a -m "BUILD Kernel"
+          
+      - name: Add make name
+        run: |
+         cd kernel_workspace/kernel_platform
+         sed -i 's/res="\$res\$(cat "\$file")"/res="-android15-8-g013ec21bba94-abogki383916444"/g' ./common/scripts/setlocalversion
+         sudo sed -i 's/-android15-8-g013ec21bba94-abogki383916444/${{ github.event.inputs.KERNEL_NAME }}/g' ./common/scripts/setlocalversion
+         
+      - name: Set Kernel build timestamp
+        run: |
+          export SOURCE_DATE_EPOCH=$(date -d "${{ github.event.inputs.KERNEL_TIME }}" +%s)
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> $GITHUB_ENV
+
+      
+      - name: Add sched_ext
+        run: |
+         cd kernel_workspace/kernel_platform/
+         git clone https://github.com/AQ16/sched_ext.git
+         cp -r ./sched_ext/* ./common/kernel/sched
+         rm -rf ./sched_ext/.git
+         cd common/kernel/sched
+         sed -i.bak '/# include "ext.c"/a\# include "hmbird_sched_proc_main.c"\n#endif\n\n#ifdef CONFIG_SLIM_SCHED\n# include "slim_sysctl.c"' build_policy.c
+         
+           
+      - name: Build Kernel
+        run: |
+           export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH}
+           cd kernel_workspace/kernel_platform
+           #tools/bazel run --config=fast --config=stamp --lto=thin //common:kernel_aarch64_dist -- --dist_dir=dist
+           tools/bazel run --config=fast --config=stamp //common:kernel_aarch64_dist -- --dist_dir=dist
+
+      - name: Mv oImage Image
+        if: ${{inputs.enable_feature_x }}
+        run: |
+         cd kernel_workspace/kernel_platform/dist/
+         curl -LO https://github.com/ShirkNeko/SukiSU_KernelPatch_patch/releases/download/0.11-beta/patch_linux
+         chmod +x patch_linux
+         ./patch_linux
+         rm -f Image
+         mv oImage Image
+         
+      - name: Make AnyKernel3
+        run: |
+           git clone https://github.com/AQ16/AnyKernel3.git AnyKernel3 --depth=1
+             mv ./AnyKernel3/anykernel_all.sh ./AnyKernel3/anykernel.sh
+             rm -rf ./AnyKernel3/bin
+             rm -rf ./AnyKernel3/anykernel_SM8750.sh
+           rm -rf ./AnyKernel3/.git
+           cp kernel_workspace/kernel_platform/dist/Image ./AnyKernel3/
+         
+       # 下载 SUSFS 模块（CI）
+      - name: Download Latest SUSFS Module from CI
+        if: ${{ github.event.inputs.SUSFS_CI == 'true' }}
+        run: |
+          LATEST_RUN_ID=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs?status=success" | \
+            jq -r '.workflow_runs[] | select(.head_branch == "v1.5.2+") | .id' | head -n 1)
+
+          if [ -z "$LATEST_RUN_ID" ]; then
+            echo "No successful run found for branch v1.5.2+"
+          else
+
+          ARTIFACT_URL=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$LATEST_RUN_ID/artifacts" | jq -r '.artifacts[0].archive_download_url')
+
+          curl -L -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -o ksu_module_susfs_1.5.2+_CI.zip "$ARTIFACT_URL"
+          cp ksu_module_susfs_1.5.2+_CI.zip ./AnyKernel3/
+          fi
+          
+      # 下载 SUSFS 模块（Release）
+      - name: Download Latest SUSFS Module from Release
+        if: ${{ github.event.inputs.SUSFS_CI == 'false' }}
+        run: |
+          wget -O ksu_module_susfs_1.5.2+_Release.zip https://github.com/sidex15/ksu_module_susfs/releases/latest/download/ksu_module_susfs_1.5.2+.zip
+          cp ksu_module_susfs_1.5.2+_Release.zip ./AnyKernel3/
+  
+      # 下载 Zram_Configuration 模块（Release）
+      - name: Download Latest Zram_Configuration Module from Release
+        if: ${{ github.event.inputs.ZRAM == 'true' }}
+        run: |
+          wget https://github.com/AQ16/QQQiuCi/releases/latest/download/Zram_Configuration.zip
+          cp Zram_Configuration.zip ./AnyKernel3/
+          
+     # 下载SukiSU Ultra管理器
+      - name: Download latest SukiSU Ultra APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          LATEST_RELEASE=$(curl -sSLH "Authorization: Bearer $GH_TOKEN" \
+              https://api.github.com/repos/ShirkNeko/SukiSU-Ultra/releases/latest)
+          APK_URL=$(echo "$LATEST_RELEASE" | jq -r '.assets[] | select(.name | test(".*\\.apk$")) | .browser_download_url')
+          if [ -z "$APK_URL" ]; then
+            echo "No APK file found in the latest release."
+          else
+          curl -LO "$APK_URL"
+          APK_FILE=$(basename "$APK_URL")
+          echo "Downloaded file: $APK_FILE"
+          mv "$APK_FILE" ./AnyKernel3/
+          echo "Renamed and moved file to ./AnyKernel3/"
+          fi
+          
+      - name: Upload AnyKernel3
+        uses: actions/upload-artifact@v4
+        with:
+         name: SuKiSu_${{ env.KSUVER }}_${{ github.event.inputs.FEIL }}_${{ env.TIMESTAMP }}
+         path: ./AnyKernel3/*
+         
+      - name: Upload Image
+        uses: actions/upload-artifact@v4
+        with:
+         name: Image_SuKiSu_${{ env.KSUVER }}_${{ github.event.inputs.FEIL }}_${{ env.TIMESTAMP }}
+         path: kernel_workspace/kernel_platform/dist/Image
