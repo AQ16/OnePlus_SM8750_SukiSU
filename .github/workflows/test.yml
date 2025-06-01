@@ -335,23 +335,7 @@ jobs:
           wget https://github.com/AQ16/QQQiuCi/releases/latest/download/Zram_Configuration.zip
           cp Zram_Configuration.zip ./AnyKernel3/
           
-     # 下载SukiSU Ultra管理器
-      - name: Download latest SukiSU Ultra APK
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          LATEST_RELEASE=$(curl -sSLH "Authorization: Bearer $GH_TOKEN" \
-              https://api.github.com/repos/ShirkNeko/SukiSU-Ultra/releases/latest)
-          APK_URL=$(echo "$LATEST_RELEASE" | jq -r '.assets[] | select(.name | test(".*\\.apk$")) | .browser_download_url')
-          if [ -z "$APK_URL" ]; then
-            echo "No APK file found in the latest release."
-          else
-          curl -LO "$APK_URL"
-          APK_FILE=$(basename "$APK_URL")
-          echo "Downloaded file: $APK_FILE"
-          mv "$APK_FILE" ./AnyKernel3/
-          echo "Renamed and moved file to ./AnyKernel3/"
-          fi
+     
           
       - name: Upload AnyKernel3
         uses: actions/upload-artifact@v4
