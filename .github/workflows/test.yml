@@ -31,7 +31,7 @@ on:
       KERNEL_TIME:
        description: "内核构建日期更改"
        required: true
-       default: '2024-12-17 23:36:49 UTC'
+       default: 'Tue Dec 17 23:36:49 UTC 2024'
       SUSFS_CI:
        type: boolean
        description: "SUSFS模块下载是否调用CI？"
