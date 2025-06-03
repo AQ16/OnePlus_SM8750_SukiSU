@@ -19,6 +19,7 @@ on:
           - ONEPLUS13_KPM-SuKiSu-SUSFS
           - ONEPLUS13T_KPM-SuKiSu-SUSFS
           - ONEPLUSAce5Pro_KPM-SuKiSu-SUSFS
+          -ONEPLUS13-SuKiSu-SUSFS-TSTE
       count:
         description: '最多清理的运行次数'
         required: false
